@@ -806,17 +806,10 @@
 
     <div class="loc-row" id="locRow">
       <button class="chip" data-loc="geo">Use My Location</button>
-      <button class="chip" data-loc="place">Search a Place</button>
-      <button class="chip" data-loc="manual">Enter Coordinates</button>
     </div>
-    <div class="manual-loc" id="placeLoc">
-      <input type="text" id="placeInput" placeholder="City, state or country" style="width:240px;">
-      <button id="applyPlace">Find</button>
-    </div>
-    <div class="manual-loc" id="manualLoc">
-      <input type="text" id="latInput" placeholder="Latitude">
-      <input type="text" id="lonInput" placeholder="Longitude">
-      <button id="applyManual">Apply</button>
+    <div class="manual-loc show" id="placeLoc">
+      <input type="text" id="placeInput" placeholder="City, state or zip code" style="width:260px;" aria-label="City, state or zip code">
+      <button id="applyPlace">Find My Location</button>
     </div>
     <div class="loc-status" id="locStatus">Location not set. Using a generic 6:00 AM sunrise until you choose one.</div>
   </div>
@@ -1407,35 +1400,27 @@ async function findPlace(){
   if (!q) return;
   status.textContent = 'Searching…';
   try{
-    const res = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=${encodeURIComponent(q)}`, {headers:{'Accept-Language':'en'}});
+    const zipOnly = q.match(/^(\d{5})(?:-\d{4})?$/);
+    const query = zipOnly ? `postalcode=${zipOnly[1]}&countrycodes=us` : `q=${encodeURIComponent(q)}`;
+    const res = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&addressdetails=1&${query}`, {headers:{'Accept-Language':'en'}});
     if (!res.ok) throw new Error('lookup failed');
     const r = (await res.json())[0];
-    if (!r){ status.textContent = `Could not find "${q}". Try adding the state or country.`; return; }
-    setLocation(parseFloat(r.lat), parseFloat(r.lon), r.display_name.split(',').slice(0,2).join(',').trim());
+    if (!r){ status.textContent = `Could not find "${q}". Try the city and state, or a 5-digit zip code.`; return; }
+    const a = r.address || {};
+    const place = a.city || a.town || a.village || a.hamlet || a.county || '';
+    const region = a.state || a.country || '';
+    const label = (place && region) ? `${place}, ${region}` : r.display_name.split(',').slice(0,2).join(',').trim();
+    setLocation(parseFloat(r.lat), parseFloat(r.lon), label);
+    document.querySelectorAll('#locRow .chip').forEach(c=>c.classList.remove('active'));
   } catch(_){
-    status.textContent = 'Could not reach the place lookup. Check your connection, or use coordinates.';
+    status.textContent = 'Could not reach the place lookup. Check your connection and try again.';
   }
 }
 document.getElementById('locRow').addEventListener('click', (e)=>{
-  const btn = e.target.closest('.chip');
-  if(!btn) return;
-  document.querySelectorAll('#locRow .chip').forEach(c=>c.classList.remove('active'));
-  btn.classList.add('active');
-  const which = btn.dataset.loc;
-  const manual = document.getElementById('manualLoc');
-  const place = document.getElementById('placeLoc');
-  manual.classList.toggle('show', which==='manual');
-  place.classList.toggle('show', which==='place');
-  if (which==='geo') initLocation();
+  if (e.target.closest('.chip')) initLocation();
 });
 document.getElementById('applyPlace').addEventListener('click', findPlace);
-document.getElementById('placeInput').addEventListener('keydown', (e)=>{ if (e.key==='Enter'){ e.preventDefault(); findPlace(); } });
-document.getElementById('applyManual').addEventListener('click', ()=>{
-  const lat = parseFloat(document.getElementById('latInput').value);
-  const lon = parseFloat(document.getElementById('lonInput').value);
-  if(isNaN(lat)||isNaN(lon)) return;
-  setLocation(lat, lon, "Custom Coordinates");
-});
+document.getElementById('placeInput').addEventListener('keydown', (ev)=>{ if (ev.key==='Enter'){ ev.preventDefault(); findPlace(); } });
 
 /* ---------------- Your Chart ---------------- */
 let natalLat = null, natalLon = null;
@@ -1490,7 +1475,8 @@ async function geocodeCity(){
   if (!query) return;
   status.textContent = 'Locating…';
   try{
-    const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=${encodeURIComponent(query)}`;
+    const zipOnly = query.match(/^(\d{5})(?:-\d{4})?$/);
+    const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&${zipOnly ? 'postalcode=' + zipOnly[1] + '&countrycodes=us' : 'q=' + encodeURIComponent(query)}`;
     const res = await fetch(url, { headers: { 'Accept-Language': 'en' } });
     if (!res.ok) throw new Error('lookup failed');
     const results = await res.json();

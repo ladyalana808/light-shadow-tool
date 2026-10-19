@@ -45,7 +45,7 @@ It is built for practitioners who work from a Hermetic Qabalah lens and want the
 
 1. Download `light-and-shadow.html` from this repo (open the file on GitHub and use the download button).
 2. Open it in a current version of Chrome, Edge, Firefox or Safari.
-3. Choose a location with **Use My Location**, **Search a Place** or **Enter Coordinates**. Until you do, the tool uses a generic 6:00 AM sunrise, so window times are only approximate.
+3. Set your location by typing a city and state or a zip code under the wheel and pressing **Find My Location**, or press **Use My Location**. Until you do, the tool uses a generic 6:00 AM sunrise, so window times are only approximate.
 4. Add your chart in **Your Chart** if you want your birth angels marked on the wheel.
 
 Everything above works without an API key. Only the chat and the Latin Composer need one.
