@@ -88,6 +88,11 @@
   }
   .key-dot{position:absolute; top:-2px; right:-2px; width:11px; height:11px; border-radius:50%; background:#3f8f5b; border:2px solid #fff;}
   .key-dot[hidden]{display:none;}
+  .backup-box{margin-top:22px; padding-top:16px; border-top:1px solid var(--line);}
+  .backup-title{font-size:15px; font-weight:700; margin-bottom:4px;}
+  dialog#settingsDialog label.backup-check{display:flex; align-items:center; gap:8px; margin:0 0 12px;}
+  dialog#settingsDialog label.backup-check input{width:auto;}
+  .backup-actions{display:flex; gap:10px; flex-wrap:wrap;}
   .key-status{display:flex; align-items:center; gap:8px; font-size:13.5px; padding:10px 12px; border-radius:8px; border:1px solid var(--line); margin-bottom:4px;}
   .key-status .sdot{width:9px; height:9px; border-radius:50%; background:#b9b9bd; flex:none;}
   .key-status.on{border-color:#3f8f5b; color:#2d6b44;}
@@ -750,6 +755,16 @@
   <input id="apiKeyInput" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-...">
   <label for="modelSelect">Model</label>
   <select id="modelSelect"></select>
+  <div class="backup-box">
+    <div class="backup-title">Backup</div>
+    <p>Saves your journal, gate notes, correspondence overrides, birth chart and settings to one file. Restore it if your browser data is ever cleared.</p>
+    <label class="backup-check"><input type="checkbox" id="backupIncludeKey"> Include my API key in the backup file</label>
+    <div class="backup-actions">
+      <button class="btn" id="exportAllBtn" type="button">Export backup</button>
+      <button class="btn" id="importAllBtn" type="button">Import backup</button>
+      <input type="file" id="importAllFile" accept="application/json,.json" hidden>
+    </div>
+  </div>
   <div class="settings-actions">
     <span class="settings-msg" id="settingsMsg"></span>
     <button class="btn" id="clearKeyBtn" type="button">Remove key</button>
@@ -2192,6 +2207,46 @@ document.getElementById('saveSettingsBtn').addEventListener('click', ()=>{
   updateKeyStatus();
   document.getElementById('settingsMsg').textContent = (ok1&&ok2) ? 'Saved.' : 'Could not save in this browser.';
 });
+const BACKUP_PREFIXES = ['ritual_journal','ls_notes_','ov_','natal_chart','ls_chat_focus','ls_model'];
+function exportAllData(){
+  const includeKey = document.getElementById('backupIncludeKey').checked;
+  const data = {};
+  try{
+    for (let i=0;i<localStorage.length;i++){
+      const k = localStorage.key(i);
+      if (BACKUP_PREFIXES.some(pre=>k===pre || k.startsWith(pre)) || (includeKey && k==='ls_api_key')) data[k] = localStorage.getItem(k);
+    }
+  }catch(_){ document.getElementById('settingsMsg').textContent = 'Could not read browser storage.'; return; }
+  const payload = {app:'light-and-shadow', version:1, exportedAt:new Date().toISOString(), data};
+  const blob = new Blob([JSON.stringify(payload,null,2)], {type:'application/json'});
+  const a = document.createElement('a');
+  const stamp = new Date().toISOString().slice(0,10);
+  a.href = URL.createObjectURL(blob); a.download = `light-and-shadow-backup-${stamp}.json`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 2000);
+  document.getElementById('settingsMsg').textContent = `Exported ${Object.keys(data).length} items.`;
+}
+function importAllData(file){
+  const msg = document.getElementById('settingsMsg');
+  const reader = new FileReader();
+  reader.onload = ()=>{
+    let payload;
+    try{ payload = JSON.parse(reader.result); }catch(_){ msg.textContent = 'That file is not valid JSON.'; return; }
+    if (!payload || payload.app!=='light-and-shadow' || !payload.data || typeof payload.data!=='object'){ msg.textContent = 'That is not a Light & Shadow backup file.'; return; }
+    const keys = Object.keys(payload.data).filter(k=>BACKUP_PREFIXES.some(pre=>k===pre || k.startsWith(pre)) || k==='ls_api_key');
+    if (!keys.length){ msg.textContent = 'The backup file has no data in it.'; return; }
+    if (!confirm(`Restore ${keys.length} items from this backup? This replaces the matching data in this browser (journal, notes, overrides, chart, settings).`)) return;
+    try{
+      keys.forEach(k=>{ if (typeof payload.data[k]==='string') localStorage.setItem(k, payload.data[k]); });
+    }catch(_){ msg.textContent = 'Could not write to browser storage.'; return; }
+    msg.textContent = 'Restored. Reloading…';
+    setTimeout(()=>location.reload(), 600);
+  };
+  reader.readAsText(file);
+}
+document.getElementById('exportAllBtn').addEventListener('click', exportAllData);
+document.getElementById('importAllBtn').addEventListener('click', ()=>document.getElementById('importAllFile').click());
+document.getElementById('importAllFile').addEventListener('change', (e)=>{ const f = e.target.files[0]; e.target.value=''; if (f) importAllData(f); });
 document.getElementById('clearKeyBtn').addEventListener('click', ()=>{
   try{ localStorage.removeItem('ls_api_key'); }catch(_){}
   document.getElementById('apiKeyInput').value = '';
