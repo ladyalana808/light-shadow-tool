@@ -805,17 +805,20 @@
     </div>
 
     <div class="loc-row" id="locRow">
-      <button class="chip active" data-loc="geo">Use My Location</button>
-      <button class="chip" data-loc="acworth">Acworth, GA</button>
-      <button class="chip" data-loc="hawaii">Hawaiʻi (Oʻahu)</button>
+      <button class="chip" data-loc="geo">Use My Location</button>
+      <button class="chip" data-loc="place">Search a Place</button>
       <button class="chip" data-loc="manual">Enter Coordinates</button>
+    </div>
+    <div class="manual-loc" id="placeLoc">
+      <input type="text" id="placeInput" placeholder="City, state or country" style="width:240px;">
+      <button id="applyPlace">Find</button>
     </div>
     <div class="manual-loc" id="manualLoc">
       <input type="text" id="latInput" placeholder="Latitude">
       <input type="text" id="lonInput" placeholder="Longitude">
       <button id="applyManual">Apply</button>
     </div>
-    <div class="loc-status" id="locStatus">locating…</div>
+    <div class="loc-status" id="locStatus">Location not set. Using a generic 6:00 AM sunrise until you choose one.</div>
   </div>
 </div>
 
@@ -850,7 +853,7 @@
             </div>
             <div class="chart-field wide">
               <label>Birth City</label>
-              <input type="text" id="natalCity" placeholder="e.g. Honolulu, Hawaii" value="Acworth, GA">
+              <input type="text" id="natalCity" placeholder="e.g. Honolulu, Hawaii">
               <div class="natal-note" id="locationStatus">Auto-calculated from your birth city's real historical timezone rules. Override manually if you know it's wrong.</div>
             </div>
           </div>
@@ -1110,13 +1113,8 @@ const INTENTS = [
   {label:"Release", kws:["break","liberat","freedom","ending","complet","release"]},
 ];
 
-const LOCATIONS = {
-  acworth:{lat:34.0662, lon:-84.6769, label:"Acworth, GA"},
-  hawaii:{lat:21.3069, lon:-157.8583, label:"Hawaiʻi (Oʻahu)"},
-};
-
 let state = {
-  lat: null, lon: null, locLabel: "locating…",
+  lat: null, lon: null, locLabel: "",
   mode: "now",           // "now" | "custom"
   customDate: null,
   selectedIndex: null,   // null = follow live
@@ -1170,7 +1168,12 @@ function formatClockTime(date, referenceDate){
   if (dayDiff === -1) return `yesterday ${timeStr}`;
   return `${date.toLocaleDateString(undefined, {month:'short', day:'numeric'})} ${timeStr}`;
 }
+const NO_LOCATION_NOTE = 'Location not set. Using a generic 6:00 AM sunrise until you choose one.';
 function getSlotForMoment(now, lat, lon){
+  if (lat==null || lon==null){
+    // No location yet: use the equator at the browser's time-zone meridian, which puts sunrise near 6:00 AM local solar time.
+    lat = 0; lon = -new Date().getTimezoneOffset()/4;
+  }
   let sunrise = sunriseDate(now, lat, lon);
   if (sunrise==null || now < sunrise){
     const prev = new Date(now); prev.setUTCDate(prev.getUTCDate()-1);
@@ -1378,23 +1381,39 @@ function setLocation(lat, lon, label){
   refresh();
 }
 function initLocation(){
-  // Always establish a safe default first so the page never hangs waiting on geolocation.
-  setLocation(LOCATIONS.acworth.lat, LOCATIONS.acworth.lon, LOCATIONS.acworth.label);
   try{
     if (navigator.geolocation && typeof navigator.geolocation.getCurrentPosition === 'function'){
+      document.getElementById('locStatus').textContent = 'Requesting your location…';
       navigator.geolocation.getCurrentPosition(
-        pos => setLocation(pos.coords.latitude, pos.coords.longitude, "Your Location"),
-        () => { /* already on Acworth default; just reflect the UI state */
-          const acBtn = document.querySelector('[data-loc="acworth"]');
-          const geoBtn = document.querySelector('[data-loc="geo"]');
-          if (acBtn) acBtn.classList.add('active');
-          if (geoBtn) geoBtn.classList.remove('active');
+        pos => {
+          setLocation(pos.coords.latitude, pos.coords.longitude, "Your Location");
+          document.querySelectorAll('#locRow .chip').forEach(c=>c.classList.toggle('active', c.dataset.loc==='geo'));
         },
-        {timeout:6000}
+        () => {
+          if (state.lat==null) document.getElementById('locStatus').textContent = NO_LOCATION_NOTE + ' (Location access was blocked or unavailable.)';
+        },
+        {timeout:8000}
       );
+    } else if (state.lat==null){
+      document.getElementById('locStatus').textContent = NO_LOCATION_NOTE;
     }
   } catch(err){
-    // Geolocation unsupported/blocked in this context (common for local files) — safe default is already active.
+    if (state.lat==null) document.getElementById('locStatus').textContent = NO_LOCATION_NOTE;
+  }
+}
+async function findPlace(){
+  const q = document.getElementById('placeInput').value.trim();
+  const status = document.getElementById('locStatus');
+  if (!q) return;
+  status.textContent = 'Searching…';
+  try{
+    const res = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=${encodeURIComponent(q)}`, {headers:{'Accept-Language':'en'}});
+    if (!res.ok) throw new Error('lookup failed');
+    const r = (await res.json())[0];
+    if (!r){ status.textContent = `Could not find "${q}". Try adding the state or country.`; return; }
+    setLocation(parseFloat(r.lat), parseFloat(r.lon), r.display_name.split(',').slice(0,2).join(',').trim());
+  } catch(_){
+    status.textContent = 'Could not reach the place lookup. Check your connection, or use coordinates.';
   }
 }
 document.getElementById('locRow').addEventListener('click', (e)=>{
@@ -1404,10 +1423,13 @@ document.getElementById('locRow').addEventListener('click', (e)=>{
   btn.classList.add('active');
   const which = btn.dataset.loc;
   const manual = document.getElementById('manualLoc');
-  if (which==='geo'){ manual.classList.remove('show'); initLocation(); }
-  else if (which==='manual'){ manual.classList.add('show'); }
-  else { manual.classList.remove('show'); const l = LOCATIONS[which]; setLocation(l.lat,l.lon,l.label); }
+  const place = document.getElementById('placeLoc');
+  manual.classList.toggle('show', which==='manual');
+  place.classList.toggle('show', which==='place');
+  if (which==='geo') initLocation();
 });
+document.getElementById('applyPlace').addEventListener('click', findPlace);
+document.getElementById('placeInput').addEventListener('keydown', (e)=>{ if (e.key==='Enter'){ e.preventDefault(); findPlace(); } });
 document.getElementById('applyManual').addEventListener('click', ()=>{
   const lat = parseFloat(document.getElementById('latInput').value);
   const lon = parseFloat(document.getElementById('lonInput').value);
@@ -1416,8 +1438,8 @@ document.getElementById('applyManual').addEventListener('click', ()=>{
 });
 
 /* ---------------- Your Chart ---------------- */
-let natalLat = LOCATIONS.acworth.lat, natalLon = LOCATIONS.acworth.lon;
-let natalLocationLabel = LOCATIONS.acworth.label;
+let natalLat = null, natalLon = null;
+let natalLocationLabel = '';
 let offsetDirty = false;
 let lastAutoOffset = null;
 
@@ -1434,6 +1456,7 @@ function autoFillOffset(){
   let Y, Mo, D, H=12, Mi=0;
   if (dateVal){ [Y,Mo,D] = dateVal.split('-').map(Number); } else { const n=new Date(); Y=n.getFullYear(); Mo=n.getMonth()+1; D=n.getDate(); }
   if (timeVal){ const [h,m] = timeVal.split(':').map(Number); H=h; Mi=m; }
+  if (natalLat==null || natalLon==null) return;
   try{
     const zone = tzlookup(natalLat, natalLon);
     const localAsUTC = Date.UTC(Y,Mo-1,D,H,Mi);
@@ -1530,7 +1553,7 @@ function computeNatalChart(){
   const sunIdx = longitudeToGateIndex(sunLon);
   const moonIdx = longitudeToGateIndex(moonLon);
   let ascIdx = null;
-  if (hasTime){
+  if (hasTime && natalLat!=null && natalLon!=null){
     const ascLon = ascendantLongitude(birthUTC, natalLat, natalLon);
     ascIdx = longitudeToGateIndex(ascLon);
   }
@@ -1561,7 +1584,7 @@ function renderChartResults(chart){
   if (chart.ascIdx!==null) rows.push({label:'Ascendant', sub:'astrological', idx:chart.ascIdx});
   const tzNote = chart.offsetLabel ? `<div class="natal-note">Calculated using ${chart.offsetLabel} on your birth date.</div>` : '';
   const missingNote = (chart.intelligenceIdx===null || chart.ascIdx===null)
-    ? '<div class="natal-note">Add a birth time to also see your Intelligence Angel and Ascendant Gate.</div>' : '';
+    ? `<div class="natal-note">${chart.intelligenceIdx===null ? 'Add a birth time to also see your Intelligence Angel and Ascendant Gate.' : 'Add a birth city to also see your Ascendant Gate.'}</div>` : '';
   box.innerHTML = tzNote + rows.map(r=>{
     const e = ENTRIES[r.idx];
     return `<div class="chart-result-item" data-idx="${r.idx}">
@@ -1585,7 +1608,7 @@ function setChartCollapsed(collapsed, chart){
     formWrap.style.display = 'none';
     bar.style.display = 'flex';
     const timePart = chart.timeVal ? ` at ${chart.timeVal}` : '';
-    document.getElementById('activeChartSummary').textContent = `Born ${chart.dateVal}${timePart} · ${chart.locationLabel}`;
+    document.getElementById('activeChartSummary').textContent = `Born ${chart.dateVal}${timePart}${chart.locationLabel ? ' · ' + chart.locationLabel : ''}`;
   } else {
     formWrap.style.display = '';
     bar.style.display = 'none';
@@ -1594,7 +1617,8 @@ function setChartCollapsed(collapsed, chart){
 document.getElementById('editChartBtn').addEventListener('click', ()=>{
   setChartCollapsed(false);
 });
-document.getElementById('calcChartBtn').addEventListener('click', ()=>{
+document.getElementById('calcChartBtn').addEventListener('click', async ()=>{
+  if (natalLat==null && document.getElementById('natalCity').value.trim()) await geocodeCity();
   const chart = computeNatalChart();
   if (!chart){ document.getElementById('chartResults').innerHTML = '<div class="natal-note">Enter a birth date first.</div>'; return; }
   saveNatalChart(chart);
@@ -1822,7 +1846,6 @@ function saveNote(idx, text){
 /* ---------------- Live countdown ---------------- */
 function tickHero(){
   if (state.mode!=='now' || state.selectedIndex!==null) return;
-  if (state.lat==null) return;
   const now = new Date();
   const slot = getSlotForMoment(now, state.lat, state.lon);
   const mins = Math.floor(slot.minutesRemaining);
@@ -2410,8 +2433,8 @@ function nowContext(){
   const w = windowInfo(now);
   const moon = getMoonPhase(now);
   const tz = (Intl.DateTimeFormat().resolvedOptions().timeZone) || 'local time';
-  const locName = (state.locLabel && state.locLabel!=='locating…') ? state.locLabel : '';
-  return `Right now: ${fmtFull(now)} (${tz}). Active location: ${locName ? locName + ', ' : ''}latitude ${state.lat.toFixed(2)}, longitude ${state.lon.toFixed(2)}. The live Gate is #${w.e.index+1}, ${w.e.angel.name} and ${w.e.spirit.name} (${w.e.sign} ${w.e.degStart} to ${w.e.degEnd} degrees)${w.end ? ', open until ' + w.end.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'}) : ''}. Moon: ${moon.name}, ${moon.illumination}% illuminated, in ${moon.sign}.
+  const locName = state.locLabel || '';
+  return `Right now: ${fmtFull(now)} (${tz}). ${state.lat==null ? 'Active location: not set, so a generic 6:00 AM sunrise is in use.' : 'Active location: ' + (locName ? locName + ', ' : '') + 'latitude ' + state.lat.toFixed(2) + ', longitude ' + state.lon.toFixed(2) + '.'} The live Gate is #${w.e.index+1}, ${w.e.angel.name} and ${w.e.spirit.name} (${w.e.sign} ${w.e.degStart} to ${w.e.degEnd} degrees)${w.end ? ', open until ' + w.end.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'}) : ''}. Moon: ${moon.name}, ${moon.illumination}% illuminated, in ${moon.sign}.
 You have two tools, look_up_moment and find_gate_windows. Use them whenever she asks about a past or future date or time, when a gate opens, or anything that depends on a date other than right now. Never estimate a gate, window time, or moon phase for another date yourself. Call the tool.`;
 }
 
