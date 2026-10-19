@@ -2240,6 +2240,104 @@ function renderChatLog(){
   log.scrollTop = log.scrollHeight;
 }
 
+
+/* ---------------- Time tools for the AI ---------------- */
+const CHAT_TOOLS = [
+  {
+    name:'look_up_moment',
+    description:'Look up what the tool shows for any past or future moment: the active 72-gate window (Angel, Shadow, zodiac position, planet, direction, window start and end), that day\'s sunrise, plus the Sun sign and Moon phase and Moon sign. Times are in the practitioner\'s device time zone and use her active location.',
+    input_schema:{type:'object', properties:{datetime:{type:'string', description:'Local date and time as YYYY-MM-DDTHH:MM, for example 2026-12-21T06:30. A date alone (YYYY-MM-DD) means 12:00.'}}, required:['datetime']}
+  },
+  {
+    name:'find_gate_windows',
+    description:'Find when a specific gate is active in the future. Returns upcoming window start and end times for that gate, scanning forward up to 60 days.',
+    input_schema:{type:'object', properties:{
+      gate:{type:'string', description:'Gate number 1 to 72, or an Angel name (for example Vehuiah) or Shadow name (for example Bael).'},
+      from:{type:'string', description:'Optional start, YYYY-MM-DDTHH:MM or YYYY-MM-DD. Defaults to now.'},
+      count:{type:'integer', description:'How many windows to return, 1 to 10. Default 5.'}
+    }, required:['gate']}
+  }
+];
+
+function parseLocalMoment(str){
+  if (!str) return null;
+  const m = String(str).trim().match(/^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}))?/);
+  if (!m) return null;
+  const d = new Date(+m[1], +m[2]-1, +m[3], m[4]!==undefined ? +m[4] : 12, m[5]!==undefined ? +m[5] : 0);
+  return isNaN(d) ? null : d;
+}
+function fmtFull(d){
+  return d.toLocaleString(undefined, {weekday:'short', year:'numeric', month:'short', day:'numeric', hour:'numeric', minute:'2-digit'});
+}
+function windowInfo(d){
+  const slot = getSlotForMoment(d, state.lat, state.lon);
+  const e = ENTRIES[slot.idx];
+  const eff = getEffective(e);
+  const winLen = 1440/72;
+  let start = null, end = null;
+  if (slot.sunrise){
+    const k = Math.floor(slot.minutesSince/winLen);
+    start = new Date(slot.sunrise.getTime() + k*winLen*60000);
+    end = new Date(start.getTime() + winLen*60000);
+  }
+  return {slot, e, eff, start, end};
+}
+function runChatTool(name, input){
+  try{
+    if (name==='look_up_moment'){
+      const d = parseLocalMoment(input && input.datetime);
+      if (!d) return {error:'Could not read that date. Use YYYY-MM-DDTHH:MM.'};
+      const w = windowInfo(d);
+      const moon = getMoonPhase(d);
+      const signs = ['Aries','Taurus','Gemini','Cancer','Leo','Virgo','Libra','Scorpio','Sagittarius','Capricorn','Aquarius','Pisces'];
+      const sunSign = signs[Math.floor(sunEclipticLongitude(d)/30)];
+      return {
+        moment: fmtFull(d),
+        gate_number: w.e.index+1,
+        angel: w.e.angel.name, angel_office: w.e.angel.office,
+        shadow: w.e.spirit.name, shadow_rank: w.e.spirit.rank, shadow_office: w.e.spirit.office,
+        zodiac: `${w.e.sign} ${w.e.degStart} to ${w.e.degEnd} degrees`, decan: w.e.decan, planet: w.e.planet,
+        direction: w.eff.direction, candle_color: w.eff.color, incense: w.eff.incense, metal: w.eff.metal, psalm: w.e.angel.psalm,
+        window_start: w.start ? fmtFull(w.start) : null, window_end: w.end ? fmtFull(w.end) : null,
+        sunrise_used: w.slot.sunrise ? fmtFull(w.slot.sunrise) : null,
+        sun_sign: sunSign,
+        moon: {phase: moon.name, illumination_percent: moon.illumination, sign: moon.sign, degree: Math.round(moon.signDeg*10)/10}
+      };
+    }
+    if (name==='find_gate_windows'){
+      const q = String((input && input.gate) || '').trim().toLowerCase();
+      let target = -1;
+      if (/^\d+$/.test(q)){ const n = +q; if (n>=1 && n<=72) target = n-1; }
+      else { target = ENTRIES.findIndex(e=>e.angel.name.toLowerCase()===q || e.spirit.name.toLowerCase()===q); }
+      if (target<0) return {error:'No gate matched. Use a number 1 to 72 or an exact Angel or Shadow name.'};
+      const from = parseLocalMoment(input.from) || new Date();
+      const count = Math.max(1, Math.min(10, +input.count || 5));
+      const out = [];
+      const step = 5*60000;
+      const limit = from.getTime() + 60*86400000;
+      for (let t = from.getTime(); t <= limit && out.length < count; t += step){
+        const w = windowInfo(new Date(t));
+        if (w.slot.idx===target && w.start){
+          out.push({start: fmtFull(w.start), end: fmtFull(w.end)});
+          t = w.end.getTime() + 20*3600000; // each gate opens once per sunrise day; jump ahead
+        }
+      }
+      const e = ENTRIES[target];
+      return {gate_number: target+1, angel: e.angel.name, shadow: e.spirit.name, searched_from: fmtFull(from), windows: out, note: out.length ? undefined : 'No window found in the next 60 days.'};
+    }
+    return {error:'Unknown tool'};
+  } catch(err){ return {error:String(err.message||err)}; }
+}
+function nowContext(){
+  const now = new Date();
+  const w = windowInfo(now);
+  const moon = getMoonPhase(now);
+  const tz = (Intl.DateTimeFormat().resolvedOptions().timeZone) || 'local time';
+  const locName = (state.locLabel && state.locLabel!=='locating…') ? state.locLabel : '';
+  return `Right now: ${fmtFull(now)} (${tz}). Active location: ${locName ? locName + ', ' : ''}latitude ${state.lat.toFixed(2)}, longitude ${state.lon.toFixed(2)}. The live Gate is #${w.e.index+1}, ${w.e.angel.name} and ${w.e.spirit.name} (${w.e.sign} ${w.e.degStart} to ${w.e.degEnd} degrees)${w.end ? ', open until ' + w.end.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'}) : ''}. Moon: ${moon.name}, ${moon.illumination}% illuminated, in ${moon.sign}.
+You have two tools, look_up_moment and find_gate_windows. Use them whenever she asks about a past or future date or time, when a gate opens, or anything that depends on a date other than right now. Never estimate a gate, window time, or moon phase for another date yourself. Call the tool.`;
+}
+
 async function sendChat(question){
   const apiKey = getApiKey();
   const e = currentGate();
@@ -2276,6 +2374,8 @@ You are embedded inside her own tool, "Light & Shadow," and she may ask you how 
 - The Moon Tracker (phase, illumination, current zodiac sign) is computed live and is independent of the 72-gate wheel.
 If she asks why a gate is active, how a date landed on a particular angel, or how any of the above was derived, explain the actual mechanism above rather than guessing.
 
+${nowContext()}
+
 ${focus ? `Current Gate under discussion:
 Angel (Shem HaMephorash): ${e.angel.name} — ${e.angel.office}
 Shadow (Ars Goetia): ${e.spirit.name}, ${e.spirit.rank} — ${e.spirit.office}
@@ -2283,23 +2383,33 @@ Zodiac position: ${e.sign} ${e.degStart}°–${e.degEnd}°, Decan ${e.decan}, ru
 Direction: ${eff.direction} · Candle color: ${eff.color} · Incense: ${eff.incense} · Metal: ${eff.metal} · Psalm: ${e.angel.psalm}${eff.customized ? ' (note: the practitioner has personalized some of these correspondences to her own lineage)' : ''}` : `This is a general conversation. She may ask about anything: magic, Qabalah, astrology, ritual planning, writing, or topics unrelated to the tool. Do not assume she is asking about any particular Gate unless she names one. Keep the same voice and the same lineage rules whenever the topic touches her practice.`}`;
 
   try{
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true'
-      },
-      body: JSON.stringify({
-        model: model,
-        max_tokens: 1536,
-        thinking: { type: 'disabled' },
-        system: systemPrompt,
-        messages: chatState.history.filter(m=>!m.error).map(m=>({role:m.role, content:m.content}))
-      })
-    });
-    const data = await res.json();
+    const msgs = chatState.history.filter(m=>!m.error).map(m=>({role:m.role, content:m.content}));
+    let res, data;
+    for (let turn = 0; turn < 6; turn++){
+      res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true'
+        },
+        body: JSON.stringify({
+          model: model,
+          max_tokens: 1536,
+          thinking: { type: 'disabled' },
+          system: systemPrompt,
+          tools: CHAT_TOOLS,
+          messages: msgs
+        })
+      });
+      data = await res.json();
+      if (!res.ok || data.stop_reason !== 'tool_use') break;
+      msgs.push({role:'assistant', content: data.content});
+      msgs.push({role:'user', content: data.content.filter(b=>b.type==='tool_use').map(b=>({
+        type:'tool_result', tool_use_id:b.id, content: JSON.stringify(runChatTool(b.name, b.input))
+      }))});
+    }
     loadingEl.remove();
     if (!res.ok){
       const msg = (data && data.error && data.error.message) ? data.error.message : ('Request failed (' + res.status + ')');
